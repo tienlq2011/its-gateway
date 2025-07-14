@@ -1,0 +1,25 @@
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq:5672/"
+  exchange: "its.events"
+  exchangeType: "direct"
+  routingKey: "camera.event"
+  retry: 5
+  retryDelay: 2s
+
+dahua:
+  username: "admin"
+  password: "123456"
+  laneMap:        
+    lane-01: "192.168.1.101"
+    lane-02: "192.168.1.102"
+    lane-03: "192.168.1.103"
+
+server:
+  port: "8080"        
+  read_timeout: 10s
+  write_timeout: 10s
+  request_id_header: "X-Request-ID"
+
+logging:
+  level: "info" 
+  format: "json"

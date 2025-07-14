@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - its-net
+
+  its-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    container_name: its-gateway
+    depends_on:
+      - rabbitmq
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yml:/app/config.yml
+    restart: unless-stopped
+    networks:
+      - its-net
+
+  its-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    container_name: its-consumer
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./config.yml:/app/config.yml
+    restart: unless-stopped
+    networks:
+      - its-net
+
+volumes:
+  rabbitmq-data:
+
+networks:
+  its-net:
+

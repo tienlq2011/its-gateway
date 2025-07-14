@@ -1,0 +1,147 @@
+package mq
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/streadway/amqp"
+)
+
+// Publisher handles publishing messages to RabbitMQ
+type Publisher struct {
+    conn       *amqp.Connection
+    channel    *amqp.Channel
+    exchange   string
+    routingKey string
+    confirms   <-chan amqp.Confirmation
+}
+
+// dialWithRetry connects to RabbitMQ with retry logic
+func dialWithRetry(url string, retry int, delay time.Duration) (*amqp.Connection, error) {
+    var conn *amqp.Connection
+    var err error
+
+    for attempt := 1; attempt <= retry; attempt++ {
+        conn, err = amqp.Dial(url)
+        if err == nil {
+            return conn, nil
+        }
+        log.Printf("RabbitMQ connection failed (%d/%d): %v", attempt, retry, err)
+        time.Sleep(delay)
+    }
+    return nil, fmt.Errorf("could not connect to RabbitMQ after %d attempts: %w", retry, err)
+}
+
+// NewPublisher creates a Publisher with exchange & confirm support
+func NewPublisher(cfg Config) (*Publisher, error) {
+    conn, err := dialWithRetry(cfg.URL, cfg.Retry, cfg.RetryDelay)
+    if err != nil {
+        return nil, err
+    }
+
+    ch, err := conn.Channel()
+    if err != nil {
+        conn.Close()
+        return nil, err
+    }
+
+    // Declare exchange
+    if err := ch.ExchangeDeclare(
+        cfg.Exchange,
+        cfg.ExchangeType,
+        true,  // durable
+        false, // auto-delete
+        false, // internal
+        false, // no-wait
+        nil,
+    ); err != nil {
+        ch.Close()
+        conn.Close()
+        return nil, fmt.Errorf("failed to declare exchange: %w", err)
+    }
+
+    // Declare queue
+    queueName := "camera.event.queue"
+    _, err = ch.QueueDeclare(
+        queueName,
+        true,  // durable
+        false, // auto-delete
+        false, // exclusive
+        false, // no-wait
+        nil,
+    )
+    if err != nil {
+        ch.Close()
+        conn.Close()
+        return nil, fmt.Errorf("failed to declare queue: %w", err)
+    }
+
+    // Bind queue to exchange
+    if err := ch.QueueBind(
+        queueName,
+        cfg.RoutingKey,
+        cfg.Exchange,
+        false,
+        nil,
+    ); err != nil {
+        ch.Close()
+        conn.Close()
+        return nil, fmt.Errorf("failed to bind queue: %w", err)
+    }
+
+    // Enable confirm mode
+    if err := ch.Confirm(false); err != nil {
+        ch.Close()
+        conn.Close()
+        return nil, fmt.Errorf("could not enable confirm mode: %w", err)
+    }
+
+    return &Publisher{
+        conn:       conn,
+        channel:    ch,
+        exchange:   cfg.Exchange,
+        routingKey: cfg.RoutingKey,
+        confirms:   ch.NotifyPublish(make(chan amqp.Confirmation, 1)),
+    }, nil
+}
+
+// Publish sends a message and waits for confirmation
+func (p *Publisher) Publish(ctx context.Context, body []byte) error {
+    err := p.channel.Publish(
+        p.exchange,
+        p.routingKey,
+        false,
+        false,
+        amqp.Publishing{
+            ContentType:  "application/json",
+            Body:         body,
+            DeliveryMode: amqp.Persistent,
+        },
+    )
+    if err != nil {
+        return fmt.Errorf("publish failed: %w", err)
+    }
+
+    select {
+    case confirm := <-p.confirms:
+        if !confirm.Ack {
+            return fmt.Errorf("message not acknowledged")
+        }
+    case <-ctx.Done():
+        return fmt.Errorf("publish confirmation timeout: %w", ctx.Err())
+    }
+
+    return nil
+}
+
+// Close shuts down channel and connection
+func (p *Publisher) Close() {
+    if p.channel != nil {
+        _ = p.channel.Close()
+    }
+    if p.conn != nil {
+        _ = p.conn.Close()
+    }
+}
