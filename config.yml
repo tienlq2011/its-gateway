@@ -1,5 +1,5 @@
 rabbitmq:
-  url: "amqp://guest:guest@rabbitmq:5672/"
+  url: "amqp://guest:guest@10.50.99.128:5672/"
   exchange: "its.events"
   exchangeType: "direct"
   routingKey: "camera.event"
@@ -8,9 +8,9 @@ rabbitmq:
 
 dahua:
   username: "admin"
-  password: "123456"
+  password: "SsgCT7LB@123"
   laneMap:        
-    lane-01: "192.168.1.101"
+    lane-01: "172.19.11.173"
     lane-02: "192.168.1.102"
     lane-03: "192.168.1.103"
 

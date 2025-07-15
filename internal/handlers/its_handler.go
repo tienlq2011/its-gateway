@@ -1,89 +1,116 @@
 package handlers
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"time"
-
-	"github.com/gin-gonic/gin"
-
-	"its-gateway/internal/config"
-	"its-gateway/internal/dahua"
-	"its-gateway/internal/mq"
+        "bytes"
+        "context"
+        "fmt"
+        "io"
+        "log"
+        "net/http"
+        "time"
+        "encoding/json"
+        "github.com/gin-gonic/gin"
+        "its-gateway/internal/config"
+        "its-gateway/internal/dahua"
+        "its-gateway/internal/mq"
 )
 
 type ITSHandler struct {
-	Publisher *mq.Publisher
-	Config    *config.Config
+        Publisher *mq.Publisher
+        Config    *config.Config
 }
 
-type ITSEvent struct {
-	EventType string `json:"event_type"`
-	CameraID  string `json:"camera_id"`
-	Timestamp string `json:"timestamp"`
-	// Add more fields if needed
+// ======================
+// Dahua ITS JSON schema
+// ======================
+
+type PicData struct {
+        PicName string `json:"PicName"`
+        Content string `json:"Content"`
 }
 
-// HandleITSEvent receives ITS camera events and pushes them to RabbitMQ
+type Picture struct {
+        NormalPic  *PicData `json:"NormalPic"`
+        CutoutPic  *PicData `json:"CutoutPic"`
+        VehiclePic *PicData `json:"VehiclePic"`
+}
+
+type Plate struct {
+        PlateNumber string `json:"PlateNumber"`
+}
+
+type SnapInfo struct {
+        AllowUser bool `json:"AllowUser"`
+}
+
+type DahuaEvent struct {
+        Plate    Plate    `json:"Plate"`
+        Picture  Picture  `json:"Picture"`
+        SnapInfo SnapInfo `json:"SnapInfo"`
+}
+
+// ============================
+// Handle POST from ITS camera
+// ============================
+
 func (h *ITSHandler) HandleITSEvent(c *gin.Context) {
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil || len(bodyBytes) == 0 {
-		log.Printf("[WARN] Invalid or empty request body: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Invalid or empty body"})
-		return
-	}
-	// Reset request body so it can be reused if needed
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        bodyBytes, err := io.ReadAll(c.Request.Body)
+        if err != nil || len(bodyBytes) == 0 {
+                log.Printf("[WARN] Invalid or empty request body: %v", err)
+                c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Invalid or empty body"})
+                return
+        }
+        c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	var event ITSEvent
-	if err := json.Unmarshal(bodyBytes, &event); err != nil {
-		log.Printf("[WARN] Malformed ITS event payload: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Malformed ITS event"})
-		return
-	}
+        var event DahuaEvent
+        if err := json.Unmarshal(bodyBytes, &event); err != nil {
+                log.Printf("[WARN] Malformed Dahua ITS event: %v", err)
+                c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Malformed event"})
+                return
+        }
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+        log.Printf("[INFO] Received event | Plate: %s | AllowUser: %v",
+                event.Plate.PlateNumber, event.SnapInfo.AllowUser)
 
-	if err := h.Publisher.Publish(ctx, bodyBytes); err != nil {
-		log.Printf("[ERROR] Failed to publish ITS event from camera %s: %v", event.CameraID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"Result": false, "Message": "Failed to queue event"})
-		return
-	}
+        ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+        defer cancel()
 
-	log.Printf("[INFO] ITS event from camera %s queued successfully", event.CameraID)
-	c.JSON(http.StatusOK, gin.H{"Result": true, "Message": "Event queued"})
+        if err := h.Publisher.Publish(ctx, bodyBytes); err != nil {
+                log.Printf("[ERROR] Failed to publish event for plate %s: %v", event.Plate.PlateNumber, err)
+                c.JSON(http.StatusInternalServerError, gin.H{"Result": false, "Message": "Failed to queue event"})
+                return
+        }
+
+        log.Printf("[INFO] ITS event for plate %s queued successfully", event.Plate.PlateNumber)
+        c.JSON(http.StatusOK, gin.H{"Result": true, "Message": "Event queued"})
 }
 
-// OpenBarrier sends a command to Dahua camera to open the gate at the specified lane
+// ===================================
+// Endpoint để mở barrier từ backend
+// ===================================
+
 func (h *ITSHandler) OpenBarrier(c *gin.Context) {
-	laneID := c.Param("lane")
-	if laneID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Missing lane ID"})
-		return
-	}
+        laneID := c.Param("lane")
+        if laneID == "" {
+                c.JSON(http.StatusBadRequest, gin.H{"Result": false, "Message": "Missing lane ID"})
+                return
+        }
 
-	dahuaClient := dahua.NewClient(
-		h.Config.Dahua.Username,
-		h.Config.Dahua.Password,
-		h.Config.Dahua.LaneMap,
-	)
+        dahuaClient := dahua.NewClient(
+                h.Config.Dahua.Username,
+                h.Config.Dahua.Password,
+                h.Config.Dahua.LaneMap,
+        )
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+        ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+        defer cancel()
 
-	if err := dahuaClient.OpenDoor(ctx, laneID); err != nil {
-		log.Printf("[ERROR] Failed to open barrier for lane '%s': %v", laneID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"Result": false, "Message": "Failed to open gate"})
-		return
-	}
+        if err := dahuaClient.OpenDoor(ctx, laneID); err != nil {
+                log.Printf("[ERROR] Failed to open barrier for lane '%s': %v", laneID, err)
+                c.JSON(http.StatusInternalServerError, gin.H{"Result": false, "Message": "Failed to open gate"})
+                return
+        }
 
-	log.Printf("[INFO] Barrier opened successfully for lane '%s'", laneID)
-	c.JSON(http.StatusOK, gin.H{"Result": true, "Message": fmt.Sprintf("Barrier opened for lane %s", laneID)})
+        log.Printf("[INFO] Barrier opened successfully for lane '%s'", laneID)
+        c.JSON(http.StatusOK, gin.H{"Result": true, "Message": fmt.Sprintf("Barrier opened for lane %s", laneID)})
 }
-

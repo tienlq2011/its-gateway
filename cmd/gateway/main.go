@@ -32,12 +32,13 @@ func main() {
 
 	// Setup Gin router and endpoints
 	r := gin.Default()
+	r.POST("/", h.HandleITSEvent)
 	r.POST("/notification/its-event", h.HandleITSEvent)
 	r.POST("/internal/gate/:lane/open", h.OpenBarrier)
 
 	// Start server
 	log.Printf("Starting ITS Gateway on port %s...", cfg.Server.Port)
-	if err := r.Run(":" + cfg.Server.Port); err != nil {
+	if err := r.Run("0.0.0.0:" + cfg.Server.Port); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
